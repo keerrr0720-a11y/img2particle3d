@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<!--
+  img2particle3d — 通用三维粒子特效查看器模板
+  ============================================================
+  这是《万象和鸣》"聆"页竖箜篌所用粒子引擎的通用化版本。
+  你只需提供一个 window.InstrumentModels = { names:[...], create(index)->THREE.Group }
+  （见 example-models.js），本文件即可把它渲染成"星云凝聚成器物"的粒子特效，
+  并自带调色板 / 自定义取色 / 粒子形状 / 名称读出 / 拖转·滚轮切换·双击复位。
+
+  接入方式：把本文件与你的 models.js 放同一目录，
+  将下方 <script src="example-models.js"> 换成你的模型脚本，然后本地 http 打开。
+  可调常量集中在 <script> 顶部的 CONFIG；调色是网页同款色轮（wheelHue/wheelSat/wheelLight）。
+-->
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>3D 粒子特效查看器</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --ink: #fff7e7;
+            --muted: #c7bda9;
+            --gold: #f2b84b;
+            --panel: rgba(17, 14, 10, 0.88);
+            --line: rgba(242, 184, 75, 0.24);
+        }
+        * { box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; }
+        body {
+            margin: 0; overflow: hidden; color: var(--ink);
+            background:
+                radial-gradient(circle at 54% 48%, rgba(81, 51, 19, 0.29), transparent 43%),
+                #050403;
+            font-family: "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+        }
+        canvas { display: block; cursor: grab; touch-action: none; user-select: none; }
+        canvas.is-dragging { cursor: grabbing; }
+        ::selection { color: #1c1205; background: var(--gold); }
+
+        #ui-container {
+            position: absolute; top: 20px; left: 20px; z-index: 10;
+            width: min(320px, calc(100vw - 40px)); padding: 22px;
+            border: 1px solid var(--line); border-radius: 14px;
+            background: var(--panel); box-shadow: 0 18px 48px rgba(0,0,0,.38);
+            backdrop-filter: blur(18px);
+        }
+        h1 { margin: 0 0 20px; font-family: "STKaiti","KaiTi",serif; font-size: 1.35rem; font-weight: 500; letter-spacing: .08em; }
+        .control-group { margin-bottom: 16px; }
+        label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 7px; color: var(--muted); font-size: .75rem; letter-spacing: .04em; }
+        select { width: 100%; min-height: 42px; padding: 8px 34px 8px 10px; border: 1px solid rgba(255,247,231,.2); border-radius: 8px; color: var(--ink); background: #18130d; font: inherit; outline: none; }
+        select:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+
+        /* ---------- 色轮（仿网页 macOS 取色器） ---------- */
+        .wheel-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+        #color-wheel { border-radius: 50%; cursor: crosshair; touch-action: none; user-select: none; box-shadow: 0 0 0 1px rgba(255,247,231,.22), 0 6px 24px rgba(0,0,0,.45); }
+        .brightness-row { display: flex; align-items: center; gap: 10px; width: 100%; }
+        .current-color { width: 34px; height: 26px; border-radius: 7px; border: 1px solid rgba(255,247,231,.25); background: var(--gold); flex: 0 0 auto; }
+        #brightness-slider { flex: 1; height: 14px; border-radius: 7px; cursor: pointer; touch-action: none; user-select: none; box-shadow: 0 0 0 1px rgba(255,247,231,.2); position: relative; }
+        #brightness-slider .knob { position: absolute; top: 50%; width: 18px; height: 18px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 1px 5px rgba(0,0,0,.55); transform: translate(-50%, -50%); pointer-events: none; background: var(--gold); }
+
+        .item-readout { display: grid; grid-template-columns: auto 1fr; gap: 9px; align-items: center; min-height: 28px; margin-top: 2px; color: var(--muted); font-size: .75rem; line-height: 1.45; }
+        #item-counter { min-width: 42px; padding: 4px 7px; border: 1px solid rgba(242,184,75,.28); border-radius: 7px; color: #f6d58e; text-align: center; font-variant-numeric: tabular-nums; }
+        .hint { margin: 13px 0 0; color: #d6cbb7; font-size: .75rem; line-height: 1.58; }
+
+        #item-bar {
+            position: fixed; left: 50%; bottom: max(18px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+            z-index: 12; display: flex; flex-wrap: nowrap; justify-content: center; gap: 7px;
+            max-width: min(1080px, calc(100vw - 24px)); padding: 10px 12px; overflow-x: auto; scrollbar-width: none;
+            border: 1px solid var(--line); border-radius: 14px; background: var(--panel);
+            box-shadow: 0 14px 40px rgba(0,0,0,.42); backdrop-filter: blur(18px);
+        }
+        #item-bar::-webkit-scrollbar { display: none; }
+        #item-bar button { flex: 0 0 auto; min-width: 54px; padding: 8px 10px; border: 1px solid rgba(242,184,75,.3); border-radius: 9px; color: #e8dcc4; background: rgba(28,22,14,.75); font: inherit; font-size: .85rem; letter-spacing: .06em; cursor: pointer; transition: all .18s ease; }
+        #item-bar button:hover { border-color: rgba(242,184,75,.85); color: #ffe1a1; transform: translateY(-2px); }
+        #item-bar button.active { background: linear-gradient(180deg,#f2b84b,#d99b2f); border-color: #f6cd7d; color: #241705; font-weight: 700; box-shadow: 0 0 16px rgba(242,184,75,.35); }
+
+        .loading { position: absolute; left: 50%; top: 24px; z-index: 8; margin: 0; padding: 8px 12px; border-radius: 8px; color: #dbcdb6; background: rgba(5,4,3,.76); font-size: .75rem; transform: translateX(-50%); transition: opacity 180ms ease; pointer-events: none; }
+        .loading[hidden] { display: none; }
+
+        @media (max-width: 680px) {
+            #ui-container { top: 12px; left: 12px; width: min(250px, calc(100vw - 24px)); padding: 16px; }
+            h1 { margin-bottom: 14px; } .control-group { margin-bottom: 11px; }
+            #item-bar { justify-content: flex-start; max-width: calc(100vw - 16px); padding: 8px 10px; gap: 6px; }
+            #item-bar button { min-width: 56px; padding: 7px 10px; font-size: .8rem; }
+        }
+    </style>
+</head>
+<body>
+    <main id="ui-container" aria-label="粒子控制台">
+        <h1>粒子系统</h1>
+        <div class="control-group">
+            <div class="wheel-wrap">
+                <canvas id="color-wheel" width="150" height="150" aria-label="色轮选色"></canvas>
+                <div class="brightness-row">
+                    <div class="current-color" id="current-color"></div>
+                    <div id="brightness-slider"><div class="knob"></div></div>
+                </div>
+            </div>
+        </div>
+        <div class="control-group">
+            <label for="shape-selector">粒子形状</label>
+            <select id="shape-selector">
+                <option value="0">圆点</option>
+                <option value="1">方块</option>
+                <option value="2">光芒</option>
+            </select>
+        </div>
+        <div class="item-readout" role="status" aria-live="polite">
+            <span id="item-counter">1 / 1</span>
+            <span id="interaction-status">· 拖动旋转</span>
+        </div>
+        <p class="hint">移入表面，粒子随指尖浮起泛波；底部点选，滚轮快速切换；按住拖动 360° 旋转，双击恢复正视图。</p>
+    </main>
+
+    <nav id="item-bar" aria-label="对象选择"></nav>
+    <p id="loading" class="loading">正在重建三维粒子体…</p>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- ↓↓↓ 换成你自己的模型脚本：需导出 window.InstrumentModels = { names, create } ↓↓↓ -->
+    <script src="example-models.js"></script>
+    <script>
+        /* ===================== 可调常量 ===================== */
+        const CONFIG = {
+            PARTICLE_COUNT: 48000,   // 粒子数量：越大越细腻（移动端可降到 20000）
+            SCATTER_AMOUNT: 4.6,     // 切换时消散爆发半径
+            HOVER_RADIUS: 1.15,      // 鼠标触碰影响半径
+            HOVER_STRENGTH: 0.62,    // 粒子浮起强度
+            MORPH_DURATION: 1250,    // 凝聚动画时长(ms)
+            NORMALIZE_SIZE: 6.7,     // 模型归一化后的最长边目标尺寸
+            CAMERA_Z: 8.5,           // 相机距离
+            POINT_SIZE: 1.7,         // 基础点大小（"光芒"形用 2.4）
+            TINT_MIX: 0.2            // uTint 与逐顶点色的混合比例（越大越偏向所选光色）
+        };
+        // 色轮初始光色（暖金，与网页一致）；实际调色由下方色轮 wheelHue/wheelSat/wheelLight 决定
+        const DEFAULT_TINT = '#f2b84b';
+        const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const MORPH_DURATION = reducedMotion ? 160 : CONFIG.MORPH_DURATION;
+
+        const names = (window.InstrumentModels && window.InstrumentModels.names) || ['未命名'];
+
+        /* ===================== 场景 ===================== */
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 1000);
+        camera.position.z = CONFIG.CAMERA_Z;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+        renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+        renderer.setSize(innerWidth, innerHeight);
+        renderer.outputEncoding = THREE.sRGBEncoding;
+        renderer.domElement.setAttribute('aria-label', '可拖动旋转的三维粒子');
+        document.body.prepend(renderer.domElement);
+
+        scene.add(new THREE.HemisphereLight(0xffe6b5, 0x241407, 1.5));
+        const keyLight = new THREE.DirectionalLight(0xffd28a, 2.2); keyLight.position.set(4, 5, 6); scene.add(keyLight);
+        const rimLight = new THREE.DirectionalLight(0x9ab8ff, 0.85); rimLight.position.set(-5, 1, -4); scene.add(rimLight);
+
+        const displayRoot = new THREE.Group(); scene.add(displayRoot);
+
+        /* ===================== 粒子缓冲 ===================== */
+        const N = CONFIG.PARTICLE_COUNT;
+        const positions = new Float32Array(N * 3);
+        const basePositions = new Float32Array(N * 3);
+        const sourcePositions = new Float32Array(N * 3);
+        const targetPositions = new Float32Array(N * 3);
+        const colors = new Float32Array(N * 3);
+        const scatterDirs = new Float32Array(N * 3);
+        const hoverPhases = new Float32Array(N);
+
+        for (let i = 0; i < N; i++) {
+            const o = i * 3;
+            const radius = 6.2 * Math.cbrt(Math.random());
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            positions[o] = basePositions[o] = radius * Math.sin(phi) * Math.cos(theta);
+            positions[o + 1] = basePositions[o + 1] = radius * Math.sin(phi) * Math.sin(theta);
+            positions[o + 2] = basePositions[o + 2] = radius * Math.cos(phi);
+            colors[o] = 0.95; colors[o + 1] = 0.68; colors[o + 2] = 0.24;
+            const st = Math.random() * Math.PI * 2;
+            const sp = Math.acos(2 * Math.random() - 1);
+            scatterDirs[o] = Math.sin(sp) * Math.cos(st);
+            scatterDirs[o + 1] = Math.sin(sp) * Math.sin(st);
+            scatterDirs[o + 2] = Math.cos(sp);
+            hoverPhases[i] = Math.random() * Math.PI * 2;
+        }
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        /* ===================== 粒子着色器 ===================== */
+        const material = new THREE.ShaderMaterial({
+            transparent: true, depthWrite: false, depthTest: true,
+            blending: THREE.AdditiveBlending, vertexColors: true,
+            uniforms: {
+                uPointSize: { value: CONFIG.POINT_SIZE },
+                uShape: { value: 0 },
+                uTint: { value: new THREE.Color(DEFAULT_TINT) }
+            },
+            vertexShader: `
+                varying vec3 vColor;
+                uniform float uPointSize;
+                void main() {
+                    vColor = color;
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                    gl_PointSize = uPointSize * (14.0 / max(1.0, -mvPosition.z));
+                    gl_Position = projectionMatrix * mvPosition;
+                }
+            `,
+            fragmentShader: `
+                varying vec3 vColor;
+                uniform float uShape;
+                uniform vec3 uTint;
+                void main() {
+                    vec2 p = gl_PointCoord - 0.5;
+                    float dist = length(p);
+                    float alpha;
+                    if (uShape < 0.5) {
+                        alpha = 1.0 - smoothstep(0.31, 0.5, dist);
+                    } else if (uShape < 1.5) {
+                        alpha = 1.0 - smoothstep(0.44, 0.5, max(abs(p.x), abs(p.y)));
+                    } else {
+                        float crossShape = min(abs(p.x), abs(p.y));
+                        float diagonal = min(abs(p.x + p.y), abs(p.x - p.y)) * 0.72;
+                        alpha = (1.0 - smoothstep(0.035, 0.16, min(crossShape, diagonal)))
+                              * (1.0 - smoothstep(0.18, 0.5, dist));
+                    }
+                    if (alpha < 0.02) discard;
+                    vec3 finalColor = mix(vColor, uTint, ${CONFIG.TINT_MIX});
+                    gl_FragColor = vec4(finalColor, alpha * 0.94);
+                }
+            `
+        });
+
+        const particles = new THREE.Points(geometry, material);
+        displayRoot.add(particles);
+
+        const loading = document.getElementById('loading');
+        const itemCounter = document.getElementById('item-counter');
+        const interactionStatus = document.getElementById('interaction-status');
+
+        let current = 0;
+        let morphStart = performance.now();
+        let morphing = false;
+        let viewportParticleScale = 1;
+        let currentMeshModel = null;
+
+        /* ===================== 底部选择栏 ===================== */
+        const itemBar = document.getElementById('item-bar');
+        const buttons = names.map((name, index) => {
+            const btn = document.createElement('button');
+            btn.type = 'button'; btn.textContent = name;
+            btn.addEventListener('click', () => selectItem(index));
+            itemBar.appendChild(btn);
+            return btn;
+        });
+        function refreshBar() { buttons.forEach((btn, i) => btn.classList.toggle('active', i === current)); }
+
+        /* ===================== 色轮调色（仿网页 macOS 取色器） ===================== */
+        const wheelCanvas = document.getElementById('color-wheel');
+        const wheelCtx = wheelCanvas.getContext('2d');
+        const brightnessSlider = document.getElementById('brightness-slider');
+        const brightnessKnob = brightnessSlider.querySelector('.knob');
+        const currentColorChip = document.getElementById('current-color');
+        const WHEEL_SIZE = 150, WHEEL_R = WHEEL_SIZE / 2;
+        let wheelHue = 38, wheelSat = 0.72, wheelLight = 0.62;   // 默认暖金
+        let pickerX = 0, pickerY = 0;
+
+        function hslToRgb(h, s, l) {
+            const c = (1 - Math.abs(2 * l - 1)) * s, hp = h / 60, x = c * (1 - Math.abs(hp % 2 - 1));
+            let r = 0, g = 0, b = 0;
+            if (hp < 1) [r, g, b] = [c, x, 0]; else if (hp < 2) [r, g, b] = [x, c, 0];
+            else if (hp < 3) [r, g, b] = [0, c, x]; else if (hp < 4) [r, g, b] = [0, x, c];
+            else if (hp < 5) [r, g, b] = [x, 0, c]; else [r, g, b] = [c, 0, x];
+            const m = l - c / 2;
+            return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+        }
+        function drawWheel() {
+            const img = wheelCtx.createImageData(WHEEL_SIZE, WHEEL_SIZE), d = img.data;
+            for (let y = 0; y < WHEEL_SIZE; y++) for (let x = 0; x < WHEEL_SIZE; x++) {
+                const dx = x - WHEEL_R, dy = y - WHEEL_R, dist = Math.sqrt(dx * dx + dy * dy), i = (y * WHEEL_SIZE + x) * 4;
+                if (dist > WHEEL_R) { d[i + 3] = 0; continue; }
+                let hue = Math.atan2(dy, dx) * 180 / Math.PI + 90; if (hue < 0) hue += 360;
+                const [r, g, b] = hslToRgb(hue, dist / WHEEL_R, 0.5);
+                d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
+            }
+            wheelCtx.putImageData(img, 0, 0);
+            wheelCtx.beginPath(); wheelCtx.arc(WHEEL_R, WHEEL_R, WHEEL_R - 2, 0, Math.PI * 2);
+            wheelCtx.strokeStyle = 'rgba(255,255,255,0.12)'; wheelCtx.stroke();
+        }
+        function applyWheelColor() {
+            const [r, g, b] = hslToRgb(wheelHue, wheelSat, wheelLight);
+            const hex = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+            material.uniforms.uTint.value.set(hex);
+            currentColorChip.style.background = hex;
+            brightnessKnob.style.background = hex;
+        }
+        function drawPicker() {
+            drawWheel();
+            pickerX = WHEEL_R + Math.sin(wheelHue * Math.PI / 180) * wheelSat * (WHEEL_R - 10);
+            pickerY = WHEEL_R - Math.cos(wheelHue * Math.PI / 180) * wheelSat * (WHEEL_R - 10);
+            wheelCtx.beginPath(); wheelCtx.arc(pickerX, pickerY, 7, 0, Math.PI * 2);
+            wheelCtx.strokeStyle = '#fff'; wheelCtx.lineWidth = 2; wheelCtx.stroke();
+            wheelCtx.beginPath(); wheelCtx.arc(pickerX, pickerY, 7.5, 0, Math.PI * 2);
+            wheelCtx.strokeStyle = 'rgba(0,0,0,0.55)'; wheelCtx.lineWidth = 1; wheelCtx.stroke();
+        }
+        function wheelFromEvent(event) {
+            const rect = wheelCanvas.getBoundingClientRect();
+            const x = (event.clientX - rect.left) / rect.width * WHEEL_SIZE, y = (event.clientY - rect.top) / rect.height * WHEEL_SIZE;
+            const dx = x - WHEEL_R, dy = y - WHEEL_R;
+            const dist = Math.min(Math.sqrt(dx * dx + dy * dy), WHEEL_R - 4);
+            wheelSat = Math.min(1, dist / (WHEEL_R - 10));
+            wheelHue = Math.atan2(dx, -dy) * 180 / Math.PI; if (wheelHue < 0) wheelHue += 360;
+            drawPicker(); updateBrightnessSlider(); applyWheelColor();
+        }
+        let wheelDragging = false;
+        wheelCanvas.addEventListener('pointerdown', e => { wheelDragging = true; wheelCanvas.setPointerCapture(e.pointerId); wheelFromEvent(e); });
+        wheelCanvas.addEventListener('pointermove', e => { if (wheelDragging) wheelFromEvent(e); });
+        wheelCanvas.addEventListener('pointerup', () => { wheelDragging = false; });
+
+        function updateBrightnessSlider() {
+            const [r1, g1, b1] = hslToRgb(wheelHue, Math.max(wheelSat, 0.35), 0.92);
+            const [r2, g2, b2] = hslToRgb(wheelHue, Math.max(wheelSat, 0.35), 0.12);
+            brightnessSlider.style.background = `linear-gradient(90deg, rgb(${r1},${g1},${b1}), rgb(${r2},${g2},${b2}))`;
+            brightnessKnob.style.left = (wheelLight * 100) + '%';
+        }
+        let brightDragging = false;
+        function brightnessFromEvent(event) {
+            const rect = brightnessSlider.getBoundingClientRect();
+            wheelLight = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+            brightnessKnob.style.left = (wheelLight * 100) + '%';
+            applyWheelColor();
+        }
+        brightnessSlider.addEventListener('pointerdown', e => { brightDragging = true; brightnessSlider.setPointerCapture(e.pointerId); brightnessFromEvent(e); });
+        brightnessSlider.addEventListener('pointermove', e => { if (brightDragging) brightnessFromEvent(e); });
+        brightnessSlider.addEventListener('pointerup', () => { brightDragging = false; });
+
+        drawPicker(); updateBrightnessSlider(); applyWheelColor();
+
+        /* ===================== 表面采样 ===================== */
+        function seededRandom(seed) {
+            let state = seed >>> 0;
+            return () => { state = (state * 1664525 + 1013904223) >>> 0; return state / 4294967296; };
+        }
+        function collectSurfaceTriangles(model) {
+            const triangles = []; let totalArea = 0;
+            model.updateMatrixWorld(true);
+            model.traverse(object => {
+                if (!object.isMesh || !object.geometry?.attributes?.position) return;
+                const source = object.geometry.index ? object.geometry.toNonIndexed() : object.geometry;
+                const pos = source.attributes.position;
+                const color = object.material?.color || new THREE.Color(0xd79a35);
+                for (let i = 0; i + 2 < pos.count; i += 3) {
+                    const a = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(object.matrixWorld);
+                    const b = new THREE.Vector3().fromBufferAttribute(pos, i + 1).applyMatrix4(object.matrixWorld);
+                    const c = new THREE.Vector3().fromBufferAttribute(pos, i + 2).applyMatrix4(object.matrixWorld);
+                    const area = new THREE.Triangle(a, b, c).getArea();
+                    if (area < 1e-8) continue;
+                    totalArea += area;
+                    triangles.push({ a, b, c, color, cumulative: totalArea });
+                }
+            });
+            return { triangles, totalArea };
+        }
+        function findTriangle(triangles, target) {
+            let low = 0, high = triangles.length - 1;
+            while (low < high) { const m = (low + high) >> 1; if (triangles[m].cumulative < target) low = m + 1; else high = m; }
+            return triangles[low];
+        }
+        function rebuild(index) {
+            loading.hidden = false;
+            loading.textContent = `正在生成${names[index]}的程序化三维结构…`;
+            if (currentMeshModel) displayRoot.remove(currentMeshModel);
+            const model = window.InstrumentModels.create(index);
+            const box = new THREE.Box3().setFromObject(model);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const normalization = CONFIG.NORMALIZE_SIZE / Math.max(size.x, size.y, size.z);
+            model.scale.setScalar(normalization);
+            model.position.copy(center).multiplyScalar(-normalization);
+            model.updateMatrixWorld(true);
+            model.traverse(o => { if (!o.isMesh || !o.material) return; o.material.transparent = true; o.material.opacity = 0.17; o.material.depthWrite = true; });
+
+            const { triangles, totalArea } = collectSurfaceTriangles(model);
+            if (!triangles.length || totalArea <= 0) { loading.textContent = `${names[index]}没有可采样的三维表面`; return; }
+
+            sourcePositions.set(basePositions);
+            const random = seededRandom(8171 + index * 104729);
+            const point = new THREE.Vector3();
+            for (let i = 0; i < N; i++) {
+                const triangle = findTriangle(triangles, random() * totalArea);
+                let u = random(), v = random();
+                if (u + v > 1) { u = 1 - u; v = 1 - v; }
+                point.copy(triangle.a)
+                    .addScaledVector(new THREE.Vector3().subVectors(triangle.b, triangle.a), u)
+                    .addScaledVector(new THREE.Vector3().subVectors(triangle.c, triangle.a), v);
+                const offset = i * 3;
+                targetPositions[offset] = point.x; targetPositions[offset + 1] = point.y; targetPositions[offset + 2] = point.z;
+                colors[offset] = triangle.color.r; colors[offset + 1] = triangle.color.g; colors[offset + 2] = triangle.color.b;
+            }
+            currentMeshModel = model;
+            displayRoot.add(model);
+            geometry.attributes.color.needsUpdate = true;
+            morphStart = performance.now(); morphing = true; loading.hidden = true;
+            interactionStatus.textContent = `${names[index]} · 拖动旋转`;
+        }
+        function selectItem(index, source = 'select') {
+            current = (index + names.length) % names.length;
+            itemCounter.textContent = `${current + 1} / ${names.length}`;
+            interactionStatus.textContent = `${names[current]} · ${source === 'wheel' ? '滚轮切换' : '正在切换'}`;
+            refreshBar(); rebuild(current);
+        }
+        document.getElementById('shape-selector').addEventListener('change', e => {
+            material.uniforms.uShape.value = Number(e.target.value);
+            material.uniforms.uPointSize.value = e.target.value === '2' ? 2.4 : CONFIG.POINT_SIZE;
+        });
+
+        /* ===================== 交互 ===================== */
+        let dragging = false, lastPointerX = 0, lastPointerY = 0;
+        let targetRotationX = 0.04, targetRotationY = -0.22;
+        let rotationVelocityX = 0, rotationVelocityY = 0;
+        let lastDirectInteraction = performance.now();
+        let hoverActive = false, hoverX = 0, hoverY = 0;
+        const raycaster = new THREE.Raycaster(), localRay = new THREE.Ray(), invMatrix = new THREE.Matrix4(), ndc = new THREE.Vector2();
+
+        renderer.domElement.addEventListener('pointerdown', e => {
+            dragging = true; hoverActive = false;
+            lastPointerX = e.clientX; lastPointerY = e.clientY;
+            rotationVelocityX = 0; rotationVelocityY = 0;
+            lastDirectInteraction = performance.now();
+            renderer.domElement.classList.add('is-dragging');
+            renderer.domElement.setPointerCapture(e.pointerId);
+            interactionStatus.textContent = `${names[current]} · 旋转中`;
+        });
+        renderer.domElement.addEventListener('pointermove', e => {
+            if (dragging) {
+                const dx = e.clientX - lastPointerX, dy = e.clientY - lastPointerY;
+                lastPointerX = e.clientX; lastPointerY = e.clientY;
+                targetRotationY += dx * 0.009;
+                targetRotationX = THREE.MathUtils.clamp(targetRotationX + dy * 0.007, -1.28, 1.28);
+                rotationVelocityY = dx * 0.00072; rotationVelocityX = dy * 0.00056;
+                lastDirectInteraction = performance.now();
+            } else {
+                if (!hoverActive) interactionStatus.textContent = `${names[current]} · 粒子浮起`;
+                hoverActive = true; hoverX = e.clientX; hoverY = e.clientY; lastDirectInteraction = performance.now();
+            }
+        });
+        function endPointer(e) {
+            if (!dragging) return; dragging = false;
+            renderer.domElement.classList.remove('is-dragging');
+            if (renderer.domElement.hasPointerCapture(e.pointerId)) renderer.domElement.releasePointerCapture(e.pointerId);
+            interactionStatus.textContent = `${names[current]} · 拖动旋转`;
+        }
+        renderer.domElement.addEventListener('pointerup', endPointer);
+        renderer.domElement.addEventListener('pointercancel', endPointer);
+        renderer.domElement.addEventListener('pointerleave', () => { hoverActive = false; interactionStatus.textContent = `${names[current]} · 拖动旋转`; });
+
+        function resetView() {
+            targetRotationX = 0.04; targetRotationY = -0.22; rotationVelocityX = 0; rotationVelocityY = 0;
+            lastDirectInteraction = performance.now();
+            interactionStatus.textContent = `${names[current]} · 已恢复正视图`;
+        }
+        renderer.domElement.addEventListener('dblclick', resetView);
+
+        let wheelAccumulator = 0, wheelGestureReady = true, wheelResetTimer = 0;
+        renderer.domElement.addEventListener('wheel', e => {
+            e.preventDefault(); clearTimeout(wheelResetTimer);
+            wheelResetTimer = setTimeout(() => { wheelAccumulator = 0; wheelGestureReady = true; }, 190);
+            if (!wheelGestureReady) return;
+            wheelAccumulator += e.deltaY;
+            if (Math.abs(wheelAccumulator) < 48) return;
+            const direction = wheelAccumulator > 0 ? 1 : -1;
+            wheelGestureReady = false; wheelAccumulator = 0; lastDirectInteraction = performance.now();
+            selectItem(current + direction, 'wheel');
+        }, { passive: false });
+
+        addEventListener('keydown', e => {
+            if (/INPUT|SELECT/.test(document.activeElement?.tagName || '')) return;
+            if (e.key === 'ArrowLeft') targetRotationY -= 0.16;
+            if (e.key === 'ArrowRight') targetRotationY += 0.16;
+            if (e.key === 'ArrowUp') targetRotationX = Math.max(-1.28, targetRotationX - 0.12);
+            if (e.key === 'ArrowDown') targetRotationX = Math.min(1.28, targetRotationX + 0.12);
+            if (e.key === 'PageDown') selectItem(current + 1, 'wheel');
+            if (e.key === 'PageUp') selectItem(current - 1, 'wheel');
+            if (e.key === '0') resetView();
+            lastDirectInteraction = performance.now();
+        });
+
+        function applyResponsiveSceneLayout() {
+            const compact = innerWidth <= 680;
+            viewportParticleScale = compact ? 0.62 : 1;
+            displayRoot.position.y = compact ? -1.0 : 0.25;
+        }
+
+        const HOVER_R2 = CONFIG.HOVER_RADIUS * CONFIG.HOVER_RADIUS;
+        function animate(time) {
+            requestAnimationFrame(animate);
+            let baseChanged = false;
+            if (morphing) {
+                const elapsed = Math.min(1, (time - morphStart) / MORPH_DURATION);
+                const eased = 1 - Math.pow(1 - elapsed, 4);
+                const pulse = Math.sin(Math.PI * elapsed) * CONFIG.SCATTER_AMOUNT;
+                for (let i = 0; i < basePositions.length; i++) {
+                    basePositions[i] = sourcePositions[i] + (targetPositions[i] - sourcePositions[i]) * eased + scatterDirs[i] * pulse;
+                }
+                baseChanged = true; morphing = elapsed < 1;
+            }
+            let hasHover = false, rox = 0, roy = 0, roz = 0, dxr = 0, dyr = 0, dzr = 0;
+            if (hoverActive && !dragging) {
+                ndc.set((hoverX / innerWidth) * 2 - 1, -(hoverY / innerHeight) * 2 + 1);
+                raycaster.setFromCamera(ndc, camera);
+                displayRoot.updateMatrixWorld();
+                invMatrix.copy(displayRoot.matrixWorld).invert();
+                localRay.copy(raycaster.ray).applyMatrix4(invMatrix);
+                rox = localRay.origin.x; roy = localRay.origin.y; roz = localRay.origin.z;
+                dxr = localRay.direction.x; dyr = localRay.direction.y; dzr = localRay.direction.z;
+                hasHover = true;
+            }
+            if (baseChanged || hasHover) {
+                const arr = geometry.attributes.position.array;
+                if (hasHover) {
+                    const wave = time * 0.006;
+                    for (let i = 0; i < N; i++) {
+                        const o = i * 3;
+                        const px = basePositions[o], py = basePositions[o + 1], pz = basePositions[o + 2];
+                        let t = (px - rox) * dxr + (py - roy) * dyr + (pz - roz) * dzr; if (t < 0) t = 0;
+                        const cxp = rox + dxr * t, cyp = roy + dyr * t, czp = roz + dzr * t;
+                        const dx = px - cxp, dy = py - cyp, dz = pz - czp;
+                        const d2 = dx * dx + dy * dy + dz * dz;
+                        if (d2 < HOVER_R2 && d2 > 1e-8) {
+                            const d = Math.sqrt(d2); const f = 1 - d / CONFIG.HOVER_RADIUS;
+                            const push = f * f * CONFIG.HOVER_STRENGTH * (0.75 + 0.35 * Math.sin(wave + hoverPhases[i]));
+                            const s = push / d;
+                            arr[o] = px + dx * s; arr[o + 1] = py + dy * s; arr[o + 2] = pz + dz * s;
+                        } else { arr[o] = px; arr[o + 1] = py; arr[o + 2] = pz; }
+                    }
+                } else { arr.set(basePositions); }
+                geometry.attributes.position.needsUpdate = true;
+            }
+            if (!dragging) {
+                targetRotationY += rotationVelocityY;
+                targetRotationX = THREE.MathUtils.clamp(targetRotationX + rotationVelocityX, -1.28, 1.28);
+                rotationVelocityY *= 0.94; rotationVelocityX *= 0.9;
+                if (!reducedMotion && time - lastDirectInteraction > 4200 && Math.abs(rotationVelocityY) < 0.00008) targetRotationY += 0.00115;
+            }
+            displayRoot.rotation.x += (targetRotationX - displayRoot.rotation.x) * 0.12;
+            displayRoot.rotation.y += (targetRotationY - displayRoot.rotation.y) * 0.12;
+            displayRoot.scale.setScalar(viewportParticleScale);
+            renderer.render(scene, camera);
+        }
+
+        addEventListener('resize', () => {
+            camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+            renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75)); renderer.setSize(innerWidth, innerHeight);
+            applyResponsiveSceneLayout();
+        });
+        document.addEventListener('visibilitychange', () => { if (document.hidden) { rotationVelocityX = 0; rotationVelocityY = 0; } });
+
+        applyResponsiveSceneLayout();
+        refreshBar();
+        selectItem(0);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
